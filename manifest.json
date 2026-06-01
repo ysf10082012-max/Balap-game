@@ -7,10 +7,4 @@
   "background_color": "#000",
   "theme_color": "#ff6600",
   "icons": []
-    {
-      "src": "https://via.placeholder.com/512.png/FF6600/FFFFFF?text=RF3D",
-      "sizes": "512x512",
-      "type": "image/png"
-    }
-  ]
 }
