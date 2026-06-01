@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0">
+<title>Rally Furry 3D</title>
+<style>
+*{margin:0; padding:0; user-select:none}
+body {overflow:hidden; background:#000; font-family:Arial}
+canvas {display:block}
+#hud {
+  position:absolute; top:15px; left:15px; color:#0f0;
+  font-size:16px; font-family:monospace; text-shadow:2px 2px 4px black;
+  background:rgba(0,0,0,0.4); padding:8px; border-radius:8px;
+}
+#minimap {
+  position:absolute; top:15px; right:15px; width:100px; height:150px;
+  background:rgba(0,0,0,0.6); border:2px solid #0f0; border-radius:8px;
+}
+.btn {
+  position:absolute; bottom:25px; width:80px; height:80px;
+  background:rgba(255,255,255,0.15); border-radius:50%;
+  font-size:32px; color:white; border:3px solid rgba(255,255,255,0.5);
+  backdrop-filter:blur(5px); z-index:10;
+}
+#gas {right:25px} #kiri {left:25px} #kanan {left:120px}
+#drift {
+  position:absolute; bottom:25px; left:215px; width:70px; height:70px;
+  background:rgba(255,100,0,0.4); border-radius:50%;
+  font-size:18px; color:orange; border:3px solid orange;
+}
+#nitro {
+  position:absolute; bottom:115px; right:25px; width:70px; height:70px;
+  background:rgba(0,200,255,0.4); border-radius:50%;
+  font-size:18px; color:#0ff; border:3px solid #0ff;
+}
+#reset {
+  position:absolute; top:15px; left:50%; transform:translateX(-50%);
+  padding:8px 20px; background:rgba(255,0,0,0.8); color:white;
+  border:none; border-radius:10px; font-size:16px; font-weight:bold;
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud">
+  SPEED: <span id="speed">0</span> KMH<br>
+  TIME: <span id="timer">90</span>s<br>
+  DRIFT: <span id="driftScore">0</span><br>
+  NITRO: <span id="nitroCount">3</span>
+</div>
+<canvas id="minimap"></canvas>
+<button id="reset">RESET</button>
+<button class="btn" id="gas">▲</button>
+<button class="btn" id="kiri">◀</button>
+<button class="btn" id="kanan">▶</button>
+<button class="btn" id="drift">DRIFT</button>
+<button class="btn" id="nitro">N2O</button>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const minimap = document.getElementById('minimap');
+const mctx = minimap.getContext('2d');
+canvas.width = innerWidth;
+canvas.height = innerHeight;
+minimap.width = 100; minimap.height = 150;
+
+// AUDIO MESIN + NITRO
+let audioCtx, engineSound, nitroSound;
+function initAudio() {
+  if(audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  // Mesin
+  let osc = audioCtx.createOscillator();
+  let gain = audioCtx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.value = 70;
+  gain.gain.value = 0.08;
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start();
+  engineSound = {osc, gain};
+
+  // Nitro
+  let nosc = audioCtx.createOscillator();
+  let ngain = audioCtx.createGain();
+  nosc.type = 'square';
+  nosc.frequency.value = 200;
+  ngain.gain.value = 0;
+  nosc.connect(ngain).connect(audioCtx.destination);
+  nosc.start();
+  nitroSound = {osc: nosc, gain: ngain};
+}
+window.onclick = initAudio;
+
+// KAMERA FF OVER SHOULDER
+const KAMERA = {tinggi: 270, offsetX: 20, fov: 60};
+
+// DATA GAME
+let mobil = {x: 0, z: 0, speed: 0, maxSpeed: 14, drift: 0, nitro: 3};
+let waktu = 90, checkpoint = 0, driftScore = 0, gameOver = false;
+let jalan = [], rintangan = [], koin = [];
+let gas=false, kiri=false, kanan=false, driftBtn=false, nitroBtn=false;
+
+// Generate track 200 segmen
+for(let i=0; i<200; i++) {
+  let belok = Math.sin(i * 0.06) * 45 + Math.cos(i * 0.02) * 15;
+  jalan.push({z: i * 40, belok: belok});
+  if(i > 20 && i % 8 == 0) {
+    rintangan.push({z: i * 40, x: (Math.random()-0.5)*40, aktif:true});
+  }
+  if(i > 30 && i % 15 == 0) {
+    koin.push({z: i * 40, x: (Math.random()-0.5)*30, diambil:false});
+  }
+}
+
+// KONTROL HP
+document.getElementById('gas').ontouchstart=e=>{e.preventDefault();gas=true};
+document.getElementById('gas').ontouchend=()=>gas=false;
+document.getElementById('kiri').ontouchstart=e=>{e.preventDefault();kiri=true};
+document.getElementById('kiri').ontouchend=()=>kiri=false;
+document.getElementById('kanan').ontouchstart=e=>{e.preventDefault();kanan=true};
+document.getElementById('kanan').ontouchend=()=>kanan=false;
+document.getElementById('drift').ontouchstart=e=>{e.preventDefault();driftBtn=true};
+document.getElementById('drift').ontouchend=()=>driftBtn=false;
+document.getElementById('nitro').ontouchstart=e=>{
+  e.preventDefault();
+  if(mobil.nitro > 0 &&!nitroBtn) {
+    nitroBtn = true;
+    mobil.nitro--;
+    document.getElementById('nitroCount').textContent = mobil.nitro;
+    if(nitroSound) nitroSound.gain.gain.value = 0.3;
+    setTimeout(()=>{nitroBtn=false; if(nitroSound) nitroSound.gain.gain.value=0}, 2000);
+  }
+};
+document.getElementById('reset').onclick=()=>location.reload();
+
+// TIMER
+setInterval(()=>{
+  if(!gameOver && waktu > 0) {
+    waktu--;
+    document.getElementById('timer').textContent = waktu;
+    if(waktu == 0) {
+      gameOver = true;
+      alert('TIME UP! Jarak: ' + Math.floor(mobil.z) + 'm | Skor Drift: ' + driftScore);
+    }
+  }
+}, 1000);
+
+// GAMBAR JALAN 3D PALSU
+function gambarJalan() {
+  ctx.fillStyle = '#87CEEB';
+  ctx.fillRect(0, 0, canvas.width, canvas.height/2);
+  ctx.fillStyle = '#1a3d1a';
+  ctx.fillRect(0, canvas.height/2, canvas.width, canvas.height/2);
+
+  for(let i=jalan.length-1; i>=0; i--) {
+    let seg = jalan[i];
+    let z = seg.z - mobil.z;
+    if(z < 10 || z > 1000) continue;
+
+    let skala = KAMERA.tinggi / z;
+    let goyang = mobil.speed > 10? (Math.random()-0.5)*2.5 : 0;
+    let miring = mobil.drift * 0.6;
+
+    let x = canvas.width/2 + (seg.belok - mobil.x - KAMERA.offsetX + miring) * skala + goyang;
+    let y = canvas.height/2 + skala * 65;
+    let lebar = 190 * skala;
+
+    ctx.fillStyle = nitroBtn? '#5555ff' : mobil.drift > 0.5? '#666' : '#444';
+    ctx.fillRect(x - lebar, y, lebar*2, skala*55);
+
+    if(i % 3 == 0) {
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(x - 2.5, y, 5, skala*22);
+    }
+
+    // Asap drift
+    if(mobil.drift > 0.4 && i < 4) {
+      ctx.fillStyle = 'rgba(220,220,220,0.4)';
+      ctx.beginPath();
+      ctx.arc(x - lebar + 12, y + 25, mobil.drift*18, 0, Math.PI*2);
+      ctx.arc(x + lebar - 12, y + 25, mobil.drift*18, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    // Checkpoint
+    if(i == 60 && checkpoint == 0) {
+      ctx.fillStyle = 'rgba(0,255,0,0.5)';
+      ctx.fillRect(x - lebar, y-70, lebar*2, 140);
+      ctx.fillStyle = '#0f0';
+      ctx.font = 'bold 24px Arial';
+      ctx.fillText('CP 1', x-25, y-80);
+    }
+    if(i == 120 && checkpoint == 1) {
+      ctx.fillStyle = 'rgba(255,255,0,0.5)';
+      ctx.fillRect(x - lebar, y-70, lebar*2, 140);
+      ctx.fillStyle = '#ff0';
+      ctx.font = 'bold 24px Arial';
+      ctx.fillText('CP 2', x-25, y-80);
+    }
+    if(i == 180 && checkpoint == 2) {
+      ctx.fillStyle = 'rgba(255,0,0,0.5)';
+      ctx.fillRect(x - lebar, y-70, lebar*2, 140);
+      ctx.fillStyle = '#f00';
+      ctx.font = 'bold 24px Arial';
+      ctx.fillText('FINISH', x-35, y-80);
+    }
+  }
+}
+
+// RINTANGAN
+function gambarRintangan() {
+  for(let r of rintangan) {
+    let z = r.z - mobil.z;
+    if(z < 10 || z > 650 ||!r.aktif) continue;
+
+    let skala = KAMERA.tinggi / z;
+    let x = canvas.width/2 + (r.x - mobil.x - KAMERA.offsetX) * skala;
+    let y = canvas.height/2 + skala * 45;
+    let size = 28 * skala;
+
+    ctx.fillStyle = '#8B0000';
+    ctx.fillRect(x - size/2, y - size, size, size);
+    ctx.fillStyle = '#ff0';
+    ctx.fillRect(x - size/4, y - size/2, size/2, size/4);
+
+    if(z < 55 && Math.abs(r.x - mobil.x) < 16) {
+      mobil.speed *= 0.5;
+      r.aktif = false;
+    }
+  }
+}
+
+// KOIN
+function gambarKoin() {
+  for(let k of koin) {
+    let z = k.z - mobil.z;
+    if(z < 10 || z > 600 || k.diambil) continue;
+
+    let skala = KAMERA.tinggi / z;
+    let x = canvas.width/2 + (k.x - mobil.x - KAMERA.offsetX) * skala;
+    let y = canvas.height/2 + skala * 30;
+    let size = 12 * skala;
+
+    ctx.fillStyle = '#ffd700';
+    ctx.beginPath();
+    ctx.arc(x, y - size, size, 0, Math.PI*2);
+    ctx.fill();
+    ctx.fillStyle = '#ff8c00';
+    ctx.font = 'bold ' + size + 'px Arial';
+    ctx.fillText('$', x-4, y-size+4);
+
+    if(z < 50 && Math.abs(k.x - mobil.x) < 12) {
+      k.diambil = true;
+      driftScore += 500;
+    }
+  }
+}
+
+// MOBIL PLAYER
+function gambarMobil() {
+  let mx = canvas.width/2 - 50 + mobil.drift * 12;
+  let my = canvas.height - 115;
+
+  ctx.save();
+  ctx.translate(mx+20, my+32);
+  ctx.rotate(mobil.drift * 0.35);
+  ctx.translate(-mx-20, -my-32);
+
+  // Body
+  ctx.fillStyle = nitroBtn? '#00ffff' : '#ff6600';
+  ctx.fillRect(mx, my, 40, 70);
+
+  // Kaca
+  ctx.fillStyle = '#aaddff';
+  ctx.fillRect(mx+5, my+10, 30, 20);
+
+  // Lampu
+  ctx.fillStyle = nitroBtn? '#00ffff' : '#ffff00';
+  ctx.fillRect(mx+2, my+55, 10, 10);
+  ctx.fillRect(mx+28, my+55, 10, 10);
+
+  // Telinga rubah
+  ctx.fillStyle = nitroBtn? '#00aaff' : '#ff4400';
+  ctx.beginPath();
+  ctx.moveTo(mx, my);
+  ctx.lineTo(mx-10, my-20);
+  ctx.lineTo(mx+10, my);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(mx+40, my);
+  ctx.lineTo(mx+50, my-20);
+  ctx.lineTo(mx+30, my);
+  ctx.fill();
+
+  ctx.restore();
+
+  // Efek api nitro
+  if(nitroBtn) {
+    ctx.fillStyle = 'rgba(0,255,255,0.8)';
+    ctx.beginPath();
+    ctx.moveTo(mx+5, my+70);
+    ctx.lineTo(mx+15, my+90);
+    ctx.lineTo(mx+25, my+70);
+    ctx.fill();
+  }
+}
+
+// MINIMAP
+function gambarMinimap() {
+  mctx.fillStyle = 'rgba(0,0,0,0.8)';
+  mctx.fillRect(0, 0, 100, 150);
+
+  let scale = 0.015;
+  let playerY = 75;
+
+  mctx.fillStyle = '#0f0';
+  mctx.fillRect(48, playerY-3, 4, 6);
+
+  for(let j of jalan) {
+    let dz = j.z - mobil.z;
+    if(dz > 0 && dz < 4000) {
+      let y = playerY - dz * scale;
+      let x = 50 + j.belok * scale * 0.5;
+      if(y > 0 && y < 150) {
+        mctx.fillStyle = '#555';
+        mctx.fillRect(x-15, y, 30, 2);
+      }
+    }
+  }
+}
+
+function update() {
+  if(gameOver) return;
+
+  // FISIKA + DRIFT + NITRO
+  let accel = 0.35;
+  if(nitroBtn) accel = 0.8;
+  if(gas) mobil.speed += accel;
+  else mobil.speed *= 0.95;
+
+  let belokSpeed = 3;
+  if(driftBtn && mobil.speed > 6) {
+    mobil.drift += 0.12;
+    belokSpeed = 4.5;
+    if(mobil.drift > 3.5) mobil.drift = 3.5;
+  } else {
+    mobil.drift *= 0.88;
+  }
+
+  if(kiri) mobil.x -= belokSpeed + mobil.drift * 0.8;
+  if(kanan) mobil.x += belokSpeed + mobil.drift * 0.8;
+
+  if(mobil.drift > 1.5) {
+    driftScore += Math.floor(mobil.drift * 2);
+    document.getElementById('driftScore').textContent = driftScore;
+  }
+
+  mobil.speed = Math.min(mobil.speed, mobil.maxSpeed + (nitroBtn? 6 : 0));
+  mobil.z += mobil.speed;
+  mobil.x = Math.max(-52, Math.min(52, mobil.x));
+
+  // SUARA
+  if(engineSound) {
+    engineSound.osc.frequency.value = 50 + mobil.speed * 18 + (nitroBtn? 80 : 0);
+    engineSound.gain.gain.value = 0.04 + mobil.speed * 0.012;
+  }
+
+  // CHECKPOINT + WIN
+  if(mobil.z > 2400 && checkpoint == 0) {
+    checkpoint = 1;
+    waktu += 15; // Bonus waktu
+    alert('CHECKPOINT 1! +15 detik');
+  }
+  if(mobil.z > 4800 && checkpoint == 1) {
+    checkpoint = 2;
+    waktu += 15;
+    alert('CHECKPOINT 2! +15 detik');
+  }
+  if(mobil.z > 7200 && checkpoint == 2) {
+    checkpoint = 3;
+    gameOver = true;
+    alert('WIN!!!\nJarak: ' + Math.floor(mobil.z) + 'm\nSkor Drift: ' + driftScore + '\nWaktu Sisa: ' + waktu + 's');
+  }
+
+  document.getElementById('speed').textContent = Math.floor(mobil.speed * 14);
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  gambarJalan();
+  gambarRintangan();
+  gambarKoin();
+  gambarMobil();
+  gambarMinimap();
+
+  requestAnimationFrame(update);
+}
+update();
+
+window.onresize = () => {
+  canvas.width = innerWidth;
+  canvas.height = innerHeight;
+};
+</script>
+</body>
+</html>
